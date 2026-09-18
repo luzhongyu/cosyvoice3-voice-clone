@@ -25,7 +25,7 @@ Expected quality: timbre similarity lands at "very close"; prosody naturalness i
 ## Step 1: Set up the environment (~15 min, once)
 
 ```bash
-git clone https://github.com/<you>/cosyvoice3-voice-clone.git
+git clone https://github.com/luzhongyu/cosyvoice3-voice-clone.git
 cd cosyvoice3-voice-clone
 ./deploy.sh
 ```

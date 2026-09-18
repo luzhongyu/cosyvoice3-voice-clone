@@ -25,7 +25,7 @@
 ## 第 1 步：部署环境（约 15 分钟，只需一次）
 
 ```bash
-git clone https://github.com/<you>/cosyvoice3-voice-clone.git
+git clone https://github.com/luzhongyu/cosyvoice3-voice-clone.git
 cd cosyvoice3-voice-clone
 ./deploy.sh
 ```
