@@ -1,5 +1,7 @@
 # cosyvoice3-voice-clone
 
+[English](README.md) | 中文
+
 本地跑的音色克隆流水线。用 CosyVoice 3 做零样本/跨语言克隆，输入一段参考音频 + 一份台本，输出成品音频。全程离线，不上传任何素材。
 
 设计决策与踩坑记录见 **[DESIGN.md](DESIGN.md)**。
