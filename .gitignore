@@ -1,0 +1,16 @@
+.venv/
+CosyVoice/
+models/
+__pycache__/
+*.pyc
+# 素材、参考音频、合成片段一律不进仓库：
+# 里面是真人的声音和台本原文，误提交既涉及隐私也涉及授权。
+audio/*
+!audio/*/
+audio/*/*
+!audio/*/.gitkeep
+
+# install.sh 生成
+.requirements.macos.txt
+
+.DS_Store

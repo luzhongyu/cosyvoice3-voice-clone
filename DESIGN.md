@@ -1,0 +1,61 @@
+# 设计决策记录
+
+记录这套流水线里每个非常规选择的原因。每一条都对应一次实际的返工，遇到同类问题可以直接查。
+
+## 1. 选型：CosyVoice 3
+
+开源方案里选了 Fun-CosyVoice3-0.5B-2512（2025/12 发布）。依据是模型卡数据：0.5B 参数量做到中文 CER 1.21%、说话人相似度 78.0%，在可公开下载权重的模型里是相似度最好的一档。0.5B 体量在 Apple Silicon 上 CPU 推理无压力，实测 RTF 5~7，适合非实时内容生产。
+
+## 2. 合成模式：zero-shot 优于 cross-lingual
+
+同句 A/B 实测，zero-shot（参考音频 + 精确转写）音色相似度明显更好。原理：cross-lingual 只给声学条件（说话人向量、prompt 语音 token、prompt 频谱特征），zero-shot 额外把转写文本作为 prompt_text 喂给 LLM，音色-文字的绑定更紧。代价是需要参考音频的精确转写，whisper small 加领域词偏置可以拿到相当准的结果。
+
+## 3. `<|endofprompt|>` 硬断言
+
+CosyVoice3 所有合成模式的文本必须自带 `You are a helpful assistant.<|endofprompt|>` 前缀（token 151646，`llm.py` 有硬断言），前端不会自动加。缺失时 LLM 线程直接崩溃、不生成任何语音 token，而 hift 声码器拿到空 mel 后抛出的是一个完全不相关的错误（"Kernel size can't be greater than actual input size"），极易误诊——这是整个适配过程里最坑的一个。前缀位置：cross-lingual 加在台本前，zero-shot 加在 prompt_text 前（官方 example.py 的用法）。前缀含 `<|` 会自动跳过 text_normalize，整行不被切分。
+
+## 4. diffusers 版本兼容
+
+Matcha-TTS（CosyVoice 的 flow 模块依赖）需要 diffusers==0.25.0，但 0.25 的 `dynamic_modules_utils.py` 顶层 import 的 `cached_download` 在 huggingface_hub 0.26 已被移除。不能降级 huggingface_hub（会破坏新版 transformers），正确做法是给该文件打 try/except 补丁——这个符号只在"从 GitHub 拉社区 pipeline"的分支被调用，推理路径永远碰不到。`deploy.sh` 自动检测并打补丁。
+
+## 5. 句首杂音的根因与切除
+
+每段合成结果开头有一个"啊"状起音杂音。排查走了两层：先怀疑是参考音频裁剪点问题（裁在语音起点之前，尾音被 zero-shot 学成句首模板），修复后杂音仍在，确认是**生成侧固有现象**——LLM 首个语音 token 自带元音起音。
+
+最终用能量包络分析解决，杂音分两类形态：
+
+- **安静型**：峰值约 -26dB 递减 + 气息底噪。用振幅规则：首个 RMS > -25dB 持续 80ms 的帧即首词起音，回退 30ms 切割。
+- **响亮型**："啊"本身 -19dB，与语音同幅，振幅规则失效（切 0s）。用深谷规则：杂音与首词之间有持续 30ms 以上、低于 -35dB 的能量谷，谷底结束帧即首词起点。
+
+两类规则互相兜底，切割点加 5ms 淡入防咔哒，最大切割量 0.8s 保护。whisper 的词级时间戳在这个场景不可用——它把杂音和首词粘连标注。
+
+## 6. 节奏与读音问题：改台本，不改参数
+
+短句节奏不稳是抽卡问题（同一句话两次生成的节奏都不一样），标准动作是同文多抽几条挑最好的。除此之外的问题优先改台本：
+
+- 断句黏连 → 拆行（片段间自动插 0.35s 留白）
+- 语速漂移 → 相邻短句合并、冒号改逗号（冒号容易触发播报腔）
+- 声调错 → 同音字改写。实例：某个昵称首字被读成第三声，改写成同音的常用字锁定正确声调，听感完全一致。拼音标注（`[d][uō]` 格式，声母+带调韵母）是兜底手段，能锁读音但会扰动整句节奏，实测标注版语速明显变慢。
+
+## 7. 参考音频的处理链
+
+原片素材带连续 BGM 时用 demucs 分离人声，再做静音裁剪和响度归一。参考音频必须**从语音起点开始裁**——起点前混入的呼吸/尾音会被 zero-shot 学成"句首怎么起音"的模板，逐句复现。
+
+zero-shot 用的参考段建议裁到转写覆盖的区间，同时解决官方 "synthesis text too short than prompt text" 警告：prompt 音频和文本同比例缩短，比例关系更健康。
+
+## 8. 架构原理速览
+
+```
+参考音频 ─┬─ speech tokenizer → prompt 语音 token ──┐
+          ├─ campplus → 说话人向量                  ├─▶ LLM(Qwen 0.5B)
+          └─ whisper 特征 → prompt 频谱             │      │ 语音 token
+台本文本 ──── 文本 token（zero-shot 含转写 prompt）─┘      ▼
+                                              Flow Matching(DiT)
+                                                    │ 梅尔频谱
+                                                    ▼
+                                            HiFT 声码器（F0 预测）
+                                                    │
+                                                    ▼ 波形 24kHz
+```
+
+三段各自接收参考音频的条件注入，任何一路条件脏了，成品都会复现脏东西。
